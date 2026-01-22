@@ -1,0 +1,104 @@
+# Default configuration for training pipeline
+# YAML format for easy customization
+
+data:
+  folder: d:/AAA_Model/DATA
+  train_file: DATA/train.txt
+  test_file: DATA/test.txt
+  train_end_date: "1995-08-22"
+  output_folder: outputs
+  
+time_series:
+  windows: [1m, 5m, 15m]  # Multiple time granularities
+  
+models:
+  # Statistical models
+  arima:
+    enabled: true
+    order: [1, 1, 1]
+  
+  sarima:
+    enabled: true
+    order: [1, 1, 1]
+    seasonal_order: [1, 1, 1, 24]
+  
+  # Traditional ML
+  xgboost:
+    enabled: true
+    n_lags: 24
+    params:
+      max_depth: 5
+      learning_rate: 0.1
+      n_estimators: 100
+  
+  lightgbm:
+    enabled: true
+    n_lags: 24
+    params:
+      learning_rate: 0.1
+      num_leaves: 31
+  
+  # Deep Learning
+  lstm:
+    enabled: true
+    n_lags: 24
+    units: 50
+    epochs: 50
+    batch_size: 32
+  
+  # Specialized
+  prophet:
+    enabled: false
+    yearly_seasonality: false
+    daily_seasonality: true
+
+evaluation:
+  metrics: [rmse, mse, mae, mape]
+  forecast_steps: 24
+  
+autoscaling:
+  # Threshold-based
+  scale_out_threshold: 0.75
+  scale_in_threshold: 0.30
+  
+  # Predictive parameters
+  consecutive_threshold: 5
+  cooldown_minutes: 10
+  
+  # Server configuration
+  min_servers: 1
+  max_servers: 10
+  initial_servers: 2
+  scale_out_increment: 1
+  scale_in_decrement: 1
+  
+  # Cost
+  cost_per_server_hour: 0.10
+
+anomaly_detection:
+  spike_detection:
+    enabled: true
+    window: 10
+    threshold: 2.0  # Standard deviations
+  
+  ddos_detection:
+    enabled: true
+    load_threshold_percentile: 80
+    error_rate_threshold: 0.3
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+  cors_origins: ["*"]
+
+dashboard:
+  port: 8501
+  theme: light
+
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: outputs/pipeline.log
+
+random_state: 42
