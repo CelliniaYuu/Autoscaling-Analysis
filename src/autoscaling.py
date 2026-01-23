@@ -215,7 +215,15 @@ class CostAnalyzer:
             normalized_loads = loads / (max_load + 1e-8)
             
             for i, load in enumerate(normalized_loads):
-                action = policy.recommend_action(load)
+                # For predictive policies, use future loads as predictions
+                window_size = 5
+                if i + window_size < len(normalized_loads):
+                    predictions = normalized_loads[i+1:i+window_size]
+                else:
+                    predictions = normalized_loads[max(0, i-window_size):i]
+                
+                # Call recommend_action with predictions for all policies
+                action = policy.recommend_action(load, predictions=predictions)
                 simulator.apply_action(action, timestamp=i)
             
             # Calculate metrics
