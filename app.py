@@ -98,17 +98,29 @@ async def health():
 
 
 @app.post("/forecast", response_model=ForecastResponse)
-async def forecast(data: LoadData):
+@app.get("/forecast", response_model=ForecastResponse)
+async def forecast(data: LoadData = None):
     """
     Generate load forecast
     
     Args:
-        data: LoadData with historical data and parameters
+        data: LoadData with historical data and parameters (optional)
     
     Returns:
         ForecastResponse with predictions
     """
     try:
+        # Use sample data if not provided (for GET requests)
+        if data is None:
+            t = np.arange(2000)
+            base_load = 100
+            trend = t * 0.05
+            seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
+            noise = np.random.normal(0, 10, len(t))
+            sample_data = (base_load + trend + seasonality + noise).tolist()
+            sample_data = [max(50, x) for x in sample_data]
+            data = LoadData(historical_data=sample_data)
+        
         if not data.historical_data or len(data.historical_data) < 10:
             raise HTTPException(
                 status_code=400,
@@ -150,17 +162,29 @@ async def forecast(data: LoadData):
 
 
 @app.post("/recommend-scaling", response_model=ScalingRecommendation)
-async def recommend_scaling(data: LoadData):
+@app.get("/recommend-scaling", response_model=ScalingRecommendation)
+async def recommend_scaling(data: LoadData = None):
     """
     Recommend scaling action based on forecast
     
     Args:
-        data: LoadData with current and predicted loads
+        data: LoadData with current and predicted loads (optional)
     
     Returns:
         ScalingRecommendation with action and reasoning
     """
     try:
+        # Use sample data if not provided (for GET requests)
+        if data is None:
+            t = np.arange(2000)
+            base_load = 100
+            trend = t * 0.05
+            seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
+            noise = np.random.normal(0, 10, len(t))
+            sample_data = (base_load + trend + seasonality + noise).tolist()
+            sample_data = [max(50, x) for x in sample_data]
+            data = LoadData(historical_data=sample_data)
+        
         if not data.historical_data or len(data.historical_data) < 10:
             raise HTTPException(
                 status_code=400,

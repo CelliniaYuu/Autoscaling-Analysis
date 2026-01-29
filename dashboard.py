@@ -9,6 +9,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+import requests
 
 from src.forecasters import create_forecaster
 from src.autoscaling import AnomalyDetector, CostAnalyzer
@@ -243,14 +244,119 @@ def main():
             freq = st.selectbox("Frequency", ["1min", "5min", "15min", "1H"])
             
             if st.button("Generate Data"):
-                st.session_state.data = generate_synthetic_data(days, freq)
-                st.success("✓ Data generated!")
+                df = generate_synthetic_data(days, freq)
+                st.session_state.data = df
+                st.success(f"✓ Data generated! {len(df)} data points ({days} days × {freq} interval)")
         
         elif data_source == "Upload CSV":
             uploaded_file = st.file_uploader("Upload CSV file", type=['csv'])
             if uploaded_file:
-                st.session_state.data = pd.read_csv(uploaded_file)
-                st.success("✓ Data uploaded!")
+                df = pd.read_csv(uploaded_file)
+                st.session_state.data = df
+                st.success(f"✓ Data uploaded! {len(df)} data points")
+        
+        elif data_source == "Use API":
+            api_url = st.text_input("API URL", value="http://localhost:8000")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📊 Get Forecast from API"):
+                    try:
+                        # Generate sample historical data with trend & seasonality
+                        t = np.arange(2000)
+                        base_load = 100
+                        trend = t * 0.05
+                        seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
+                        noise = np.random.normal(0, 10, len(t))
+                        sample_data = (base_load + trend + seasonality + noise).tolist()
+                        sample_data = [max(50, x) for x in sample_data]  # Min 50
+                        
+                        response = requests.post(
+                            f"{api_url}/forecast",
+                            json={
+                                "historical_data": sample_data,
+                                "window": "5m",
+                                "forecast_steps": 24
+                            },
+                            timeout=30
+                        )
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            forecast = result['forecast']
+                            
+                            # Create dataframe with BOTH historical and forecast
+                            # Historical data (2000 points from past)
+                            now = datetime.now()
+                            hist_timestamps = [now - timedelta(minutes=5*(len(sample_data)-i)) for i in range(len(sample_data))]
+                            hist_bytes = [s * np.random.uniform(500, 2000) for s in sample_data]
+                            hist_error_rate = [0.02 + 0.01 * np.sin(i/100) for i in range(len(sample_data))]
+                            
+                            hist_df = pd.DataFrame({
+                                'timestamp': hist_timestamps,
+                                'requests': sample_data,
+                                'bytes': hist_bytes,
+                                'error_rate': hist_error_rate
+                            })
+                            
+                            # Forecast data (24 points in future)
+                            forecast_timestamps = [now + timedelta(minutes=5*i) for i in range(1, len(forecast)+1)]
+                            forecast_bytes = [f * np.random.uniform(500, 2000) for f in forecast]
+                            forecast_error_rate = [0.02 + 0.01 * np.sin(i/10) for i in range(len(forecast))]
+                            
+                            forecast_df = pd.DataFrame({
+                                'timestamp': forecast_timestamps,
+                                'requests': forecast,
+                                'bytes': forecast_bytes,
+                                'error_rate': forecast_error_rate
+                            })
+                            
+                            # Combine both
+                            df = pd.concat([hist_df, forecast_df], ignore_index=True)
+                            st.session_state.data = df
+                            st.success(f"✓ Forecast loaded! {len(hist_df)} historical + {len(forecast_df)} forecast = {len(df)} total data points")
+                        else:
+                            st.error(f"❌ API error: {response.status_code}")
+                    except Exception as e:
+                        st.error(f"❌ Connection failed: {str(e)}")
+            
+            with col2:
+                if st.button("⚡ Get Scaling Recommendation"):
+                    try:
+                        # Generate sample historical data with trend & seasonality
+                        t = np.arange(2000)
+                        base_load = 100
+                        trend = t * 0.05
+                        seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
+                        noise = np.random.normal(0, 10, len(t))
+                        sample_data = (base_load + trend + seasonality + noise).tolist()
+                        sample_data = [max(50, x) for x in sample_data]  # Min 50
+                        
+                        response = requests.post(
+                            f"{api_url}/recommend-scaling",
+                            json={
+                                "historical_data": sample_data,
+                                "window": "5m",
+                                "forecast_steps": 24
+                            },
+                            timeout=30
+                        )
+                        
+                        if response.status_code == 200:
+                            result = response.json()
+                            st.info(f"""
+                            **Recommendation:** {result['recommended_action']}
+                            
+                            **Current Load:** {result['current_load']:.0f} requests
+                            
+                            **Reason:** {result['reason']}
+                            
+                            **Confidence:** {result['confidence']*100:.1f}%
+                            """)
+                        else:
+                            st.error(f"❌ API error: {response.status_code}")
+                    except Exception as e:
+                        st.error(f"❌ Connection failed: {str(e)}")
         
         st.markdown("---")
         
