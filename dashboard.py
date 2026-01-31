@@ -425,14 +425,15 @@ def main():
         st.session_state.data = df
         
         # Tabs
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "📈 Load Analysis",
             "📊 Metrics (Extended)",
             "🔮 Forecast",
             "⚙️ Autoscaling",
             "🚨 Anomalies",
             "📉 Data Quality",
-            "⭐ Feature Importance"
+            "⭐ Feature Importance",
+            "💰 Cost Analysis"
         ])
         
         # Tab 1: Load Analysis
@@ -836,20 +837,20 @@ def main():
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
         
-        # Tab 5: Cost Analysis (renamed to new position)
-        with st.expander("💰 Cost Analysis (Optional)"):
-            st.subheader("Cost Analysis")
+        # Tab 8: Cost Analysis
+        with tab8:
+            st.subheader("💰 Cost Analysis")
             
             st.info("💡 Analyze the financial impact of different scaling policies")
             
             col1, col2 = st.columns(2)
             
             with col1:
-                unit_cost = st.number_input("Cost per Server/Hour ($)", 0.01, 10.0, 0.10, key="unit_cost_expander")
+                unit_cost = st.number_input("Cost per Server/Hour ($)", 0.01, 10.0, 0.10, key="unit_cost_tab")
             with col2:
-                min_servers = st.slider("Min Servers", 1, 5, 1, key="min_servers_expander")
+                min_servers = st.slider("Min Servers", 1, 5, 1, key="min_servers_tab")
             
-            if st.button("💰 Calculate Costs", key="calculate_costs_expander"):
+            if st.button("💰 Calculate Costs", key="calculate_costs_tab"):
                 st.markdown("---")
                 
                 # Mock cost breakdown
