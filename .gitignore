@@ -2,6 +2,8 @@
 DATA/combined.txt
 DATA/test.txt
 DATA/train.txt
+DATA/cleaned_data.csv
+DATA/cleaned_data.txt
 
 # Python cache
 __pycache__/
