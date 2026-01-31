@@ -845,45 +845,11 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                unit_cost = st.number_input("Cost per Server/Hour ($)", 0.01, 10.0, 0.10)
+                unit_cost = st.number_input("Cost per Server/Hour ($)", 0.01, 10.0, 0.10, key="unit_cost_expander")
             with col2:
-                min_servers = st.slider("Min Servers", 1, 5, 1)
+                min_servers = st.slider("Min Servers", 1, 5, 1, key="min_servers_expander")
             
-            if st.button("💰 Calculate Costs"):
-                st.markdown("---")
-                
-                # Mock cost breakdown
-                days_analyzed = len(df) / (24 * 60)  # Assume 1-minute data
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    baseline_cost = min_servers * unit_cost * 24 * days_analyzed
-                    st.metric("Baseline Cost", f"${baseline_cost:.2f}")
-                
-                with col2:
-                    avg_load = df['requests'].mean()
-                    scaling_cost = (min_servers + avg_load / 1000) * unit_cost * 24 * days_analyzed
-                    st.metric("With Scaling", f"${scaling_cost:.2f}")
-                
-                with col3:
-                    savings = baseline_cost - scaling_cost
-                    savings_pct = (savings / baseline_cost) * 100 if baseline_cost > 0 else 0
-                    st.metric("Savings", f"${savings:.2f} ({savings_pct:.1f}%)")
-        
-        # Tab 5: Cost Analysis (old - remove duplicate)
-            st.subheader("Cost Analysis")
-            
-            st.info("💡 Analyze the financial impact of different scaling policies")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                unit_cost = st.number_input("Cost per Server/Hour ($)", 0.01, 10.0, 0.10)
-            with col2:
-                min_servers = st.slider("Min Servers", 1, 5, 1)
-            
-            if st.button("💰 Calculate Costs"):
+            if st.button("💰 Calculate Costs", key="calculate_costs_expander"):
                 st.markdown("---")
                 
                 # Mock cost breakdown
