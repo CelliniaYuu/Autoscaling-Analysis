@@ -59,17 +59,60 @@ class BaseForecaster(ABC):
         pass
     
     def evaluate(self, y_true, y_pred):
-        """Calculate evaluation metrics"""
+        """
+        Calculate comprehensive evaluation metrics
+        
+        Returns:
+            dict with metrics:
+            - MSE: Mean Squared Error
+            - RMSE: Root Mean Squared Error
+            - MAE: Mean Absolute Error
+            - MAPE: Mean Absolute Percentage Error
+            - SMAPE: Symmetric MAPE
+            - R2: R-squared score
+            - Theil_U: Theil's U statistic (0=perfect, 1=baseline, >1=worse)
+            - MASE: Mean Absolute Scaled Error
+        """
         mse = mean_squared_error(y_true, y_pred)
         rmse = np.sqrt(mse)
         mae = mean_absolute_error(y_true, y_pred)
+        
+        # MAPE: Mean Absolute Percentage Error
         mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
         
+        # SMAPE: Symmetric MAPE (0-200%)
+        numerator = 2.0 * np.abs(y_true - y_pred)
+        denominator = np.abs(y_true) + np.abs(y_pred)
+        smape = np.mean(numerator / (denominator + 1e-8)) * 100
+        
+        # R² Score: Coefficient of determination (-∞ to 1, 1 is perfect)
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+        r2 = 1 - (ss_res / (ss_tot + 1e-8)) if ss_tot > 0 else 0
+        
+        # Theil's U: (0=perfect, 1=baseline, >1=worse)
+        # U < 1 means model is better than naive forecast
+        numerator_u = np.sum((y_true - y_pred) ** 2)
+        denominator_u = np.sum((y_true[1:] - y_true[:-1]) ** 2) if len(y_true) > 1 else 1
+        theil_u = np.sqrt(numerator_u / (denominator_u + 1e-8)) if denominator_u > 0 else np.inf
+        
+        # MASE: Mean Absolute Scaled Error
+        # Scale by mean absolute forecast error of naive method (persistence)
+        if len(y_true) > 1:
+            denominator_mase = np.mean(np.abs(y_true[1:] - y_true[:-1]))
+            mase = mae / (denominator_mase + 1e-8) if denominator_mase > 0 else 0
+        else:
+            mase = 0
+        
         return {
-            'mse': mse,
-            'rmse': rmse,
-            'mae': mae,
-            'mape': mape
+            'mse': float(mse),
+            'rmse': float(rmse),
+            'mae': float(mae),
+            'mape': float(mape),
+            'smape': float(smape),
+            'r2': float(r2),
+            'theil_u': float(theil_u),
+            'mase': float(mase)
         }
 
 

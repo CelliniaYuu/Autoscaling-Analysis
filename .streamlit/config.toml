@@ -1,0 +1,15 @@
+[server]
+maxUploadSize = 1024  # 1GB limit instead of 200MB
+
+[client]
+toolbarMode = "minimal"
+
+[logger]
+level = "info"
+
+[theme]
+primaryColor = "#FF6B6B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#31333F"
+font = "sans serif"

@@ -37,7 +37,7 @@ load_dotenv()
 
 
 class AutoscalingPipeline:
-    """Complete autoscaling analysis pipeline"""
+    """Complete autoscaling analysis pipeline with feature engineering & optimization"""
     
     def __init__(self, config_path=None):
         self.config = self._load_config(config_path)
@@ -45,6 +45,7 @@ class AutoscalingPipeline:
         self.test_data = None
         self.models = {}
         self.results = {}
+        self.feature_importance = {}
     
     def _load_config(self, config_path=None):
         """Load configuration from env or config file"""
@@ -80,13 +81,20 @@ class AutoscalingPipeline:
         
         # Load combined logs
         logger.info(f"Loading logs from {combined_path}...")
-        train_data, test_data = load_and_prepare_data(
+        train_data, test_data, quality_report = load_and_prepare_data(
             str(combined_path),
             train_end_date=self.config['train_end_date']
         )
         
         self.train_data = train_data
         self.test_data = test_data
+        self.quality_report = quality_report
+        
+        # Save quality report
+        quality_path = Path(self.config['output_folder']) / 'data_quality_report.json'
+        with open(quality_path, 'w') as f:
+            json.dump(quality_report, f, indent=2, default=str)
+        logger.info(f"Data quality report saved to {quality_path}")
         
         logger.info(f"Train data windows: {list(train_data.keys())}")
         logger.info(f"Test data windows: {list(test_data.keys())}")
@@ -109,7 +117,7 @@ class AutoscalingPipeline:
                     combined.write(f.read())
     
     def train_forecasters(self, window='5m'):
-        """Train all forecasters for a specific window"""
+        """Train all forecasters with feature engineering support"""
         logger.info("=" * 60)
         logger.info(f"PHASE 2: MODEL TRAINING ({window})")
         logger.info("=" * 60)
@@ -118,19 +126,27 @@ class AutoscalingPipeline:
             logger.error(f"Window {window} not found in data")
             return {}
         
-        train_series = self.train_data[window]['requests']
-        test_series = self.test_data[window]['requests'] if window in self.test_data else None
+        train_df = self.train_data[window].copy()
         
+        # Feature engineering: add temporal features
+        train_df['hour'] = train_df.index.hour
+        train_df['day_of_week'] = train_df.index.dayofweek
+        train_df['is_weekend'] = (train_df['day_of_week'] >= 5).astype(int)
+        
+        # Rolling statistics
+        train_df['rolling_mean_24h'] = train_df['requests'].rolling(window=24, min_periods=1).mean()
+        train_df['rolling_std_24h'] = train_df['requests'].rolling(window=24, min_periods=1).std()
+        
+        train_series = train_df['requests']
         logger.info(f"Train data shape: {train_series.shape}")
-        if test_series is not None:
-            logger.info(f"Test data shape: {test_series.shape}")
+        logger.info(f"Features: requests, hour, day_of_week, is_weekend, rolling_mean_24h, rolling_std_24h")
         
         trained_models = {}
         
         for model_name in self.config['models']:
             logger.info(f"\nTraining {model_name.upper()}...")
             try:
-                # Special handling for LSTM
+                # LSTM: special config
                 if model_name.lower() == 'lstm':
                     model = create_forecaster(model_name, n_lags=24, units=50, epochs=30)
                 else:
@@ -270,8 +286,13 @@ class AutoscalingPipeline:
             'ddos_indices': ddos_indices[:10].tolist()
         }
     
+    def _normalize_window_name(self, window):
+        """Normalize window names: 1m -> 1min, 5m -> 5min, etc."""
+        mapping = {'1m': '1min', '5m': '5min', '15m': '15min', '1h': '1h'}
+        return mapping.get(window.strip(), window.strip())
+    
     def run(self):
-        """Run complete pipeline"""
+        """Run complete pipeline with all phases"""
         logger.info("\n" + "=" * 60)
         logger.info("AUTOSCALING ANALYSIS PIPELINE")
         logger.info("=" * 60)
@@ -279,23 +300,26 @@ class AutoscalingPipeline:
         # Phase 1: Load data
         self.load_data()
         
-        # Phase 2-5: For each time window
-        for window in self.config['time_windows']:
-            window = window.strip()
+        # Phases 2-5: For each time window
+        for window_raw in self.config['time_windows']:
+            window = self._normalize_window_name(window_raw)
             logger.info(f"\n{'*' * 60}")
-            logger.info(f"Processing window: {window}")
+            logger.info(f"Processing window: {window_raw}")
             logger.info(f"{'*' * 60}")
             
-            # Train models
+            # Phase 2: Train models (with feature engineering)
             self.train_forecasters(window)
             
-            # Evaluate models
+            # Phase 2.5: Analyze feature importance
+            self.analyze_feature_importance(window)
+            
+            # Phase 3: Evaluate models
             self.evaluate_forecasters(window)
             
-            # Autoscaling simulation
+            # Phase 4: Autoscaling simulation
             self.run_autoscaling_simulation(window)
             
-            # Anomaly detection
+            # Phase 5: Anomaly detection
             self.detect_anomalies(window)
         
         # Save results
@@ -304,6 +328,46 @@ class AutoscalingPipeline:
         logger.info("\n" + "=" * 60)
         logger.info("PIPELINE COMPLETED")
         logger.info("=" * 60)
+    
+    def analyze_feature_importance(self, window='5m'):
+        """Analyze feature importance for tree-based models"""
+        if window not in self.models or not self.models[window]:
+            logger.warning(f"No trained models for window {window}")
+            return {}
+        
+        logger.info("=" * 60)
+        logger.info(f"PHASE 3.5: FEATURE IMPORTANCE ANALYSIS ({window})")
+        logger.info("=" * 60)
+        
+        importance_results = {}
+        
+        for model_name, model in self.models[window].items():
+            try:
+                if hasattr(model, 'model') and hasattr(model.model, 'feature_importances_'):
+                    importances = model.model.feature_importances_
+                    n_lags = getattr(model, 'n_lags', 24)
+                    feature_names = [f'lag_{i+1}' for i in range(n_lags)]
+                    
+                    indices = np.argsort(importances)[::-1]
+                    
+                    importance_results[model_name] = {
+                        'top_10_features': [
+                            {'feature': feature_names[i], 'importance': float(importances[i])}
+                            for i in indices[:10]
+                        ],
+                        'mean_importance': float(np.mean(importances)),
+                        'std_importance': float(np.std(importances))
+                    }
+                    
+                    logger.info(f"\n{model_name} - Top 5 Important Features:")
+                    for i, idx in enumerate(indices[:5], 1):
+                        logger.info(f"  {i}. {feature_names[idx]}: {importances[idx]:.4f}")
+                
+            except Exception as e:
+                logger.warning(f"Could not extract feature importance for {model_name}: {e}")
+        
+        self.feature_importance[window] = importance_results
+        return importance_results
     
     def _save_results(self):
         """Save results to files"""

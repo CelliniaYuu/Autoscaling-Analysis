@@ -1,0 +1,10 @@
+{
+  "total_records": 3453298,
+  "duplicate_records": "1381666",
+  "missing_values_pct": 0.0,
+  "timestamp_range": {
+    "start": "1995-07-01 00:00:01",
+    "end": "1995-08-31 23:59:53",
+    "duration_hours": 1487.9977777777779
+  }
+}
