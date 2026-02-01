@@ -1,5 +1,5 @@
 [server]
-maxUploadSize = 1024  # 1GB limit instead of 200MB
+maxUploadSize = 200  # 200MB limit
 
 [client]
 toolbarMode = "minimal"

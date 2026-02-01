@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+import joblib
 
 import numpy as np
 import pandas as pd
@@ -42,17 +43,15 @@ class AutoscalingPipeline:
     def __init__(self, config_path=None):
         self.config = self._load_config(config_path)
         self.train_data = None
-        self.test_data = None
         self.models = {}
         self.results = {}
-        self.feature_importance = {}
     
     def _load_config(self, config_path=None):
         """Load configuration from env or config file"""
         config = {
             'data_folder': os.getenv('DATA_FOLDER', 'DATA'),
-            'train_data_path': os.getenv('TRAIN_DATA_PATH', 'DATA/train.txt'),
-            'test_data_path': os.getenv('TEST_DATA_PATH', 'DATA/test.txt'),
+            'train_data_path': os.getenv('TRAIN_DATA_PATH', 'DATA/clean_data_train.txt'),
+            'test_data_path': os.getenv('TEST_DATA_PATH', 'DATA/clean_data_test.txt'),
             'output_folder': os.getenv('OUTPUT_FOLDER', 'outputs'),
             'train_end_date': os.getenv('TRAIN_END_DATE', '1995-08-22'),
             'time_windows': os.getenv('TIME_WINDOWS', '1m,5m,15m').split(','),
@@ -72,22 +71,21 @@ class AutoscalingPipeline:
         logger.info("PHASE 1: DATA LOADING & PREPARATION")
         logger.info("=" * 60)
         
-        # Check if combined file exists
-        combined_path = Path(self.config['train_data_path']).parent / 'combined.txt'
+        # Load cleaned train data
+        train_path = Path(self.config['train_data_path'])
         
-        if not combined_path.exists():
-            logger.info("Combining train and test files...")
-            self._combine_log_files()
+        if not train_path.exists():
+            logger.error(f"Train data file not found: {train_path}")
+            raise FileNotFoundError(f"Train data file not found: {train_path}")
         
-        # Load combined logs
-        logger.info(f"Loading logs from {combined_path}...")
-        train_data, test_data, quality_report = load_and_prepare_data(
-            str(combined_path),
+        # Load train logs
+        logger.info(f"Loading logs from {train_path}...")
+        train_data, _, quality_report = load_and_prepare_data(
+            str(train_path),
             train_end_date=self.config['train_end_date']
         )
         
         self.train_data = train_data
-        self.test_data = test_data
         self.quality_report = quality_report
         
         # Save quality report
@@ -97,24 +95,8 @@ class AutoscalingPipeline:
         logger.info(f"Data quality report saved to {quality_path}")
         
         logger.info(f"Train data windows: {list(train_data.keys())}")
-        logger.info(f"Test data windows: {list(test_data.keys())}")
         
-        return train_data, test_data
-    
-    def _combine_log_files(self):
-        """Combine train and test log files"""
-        combined_path = Path(self.config['train_data_path']).parent / 'combined.txt'
-        
-        with open(combined_path, 'w') as combined:
-            # Write train data
-            if Path(self.config['train_data_path']).exists():
-                with open(self.config['train_data_path'], 'r', encoding='utf-8', errors='ignore') as f:
-                    combined.write(f.read())
-            
-            # Write test data
-            if Path(self.config['test_data_path']).exists():
-                with open(self.config['test_data_path'], 'r', encoding='utf-8', errors='ignore') as f:
-                    combined.write(f.read())
+        return train_data
     
     def train_forecasters(self, window='5m'):
         """Train all forecasters with feature engineering support"""
@@ -148,7 +130,7 @@ class AutoscalingPipeline:
             try:
                 # LSTM: special config
                 if model_name.lower() == 'lstm':
-                    model = create_forecaster(model_name, n_lags=24, units=50, epochs=30)
+                    model = create_forecaster(model_name, n_lags=24, units=32, epochs=10)
                 else:
                     model = create_forecaster(model_name, n_lags=24)
                 
@@ -174,11 +156,7 @@ class AutoscalingPipeline:
             logger.warning(f"No trained models for window {window}")
             return {}
         
-        if window not in self.test_data:
-            logger.warning(f"No test data for window {window}")
-            return {}
-        
-        test_series = self.test_data[window]['requests']
+        test_series = self.train_data[window]['requests']
         evaluation_results = {}
         
         for model_name, model in self.models[window].items():
@@ -216,12 +194,8 @@ class AutoscalingPipeline:
         logger.info(f"PHASE 4: AUTOSCALING SIMULATION ({window})")
         logger.info("=" * 60)
         
-        if window not in self.test_data:
-            logger.warning(f"No test data for window {window}")
-            return {}
-        
-        # Get test loads
-        loads = self.test_data[window]['requests'].values
+        # Get train loads
+        loads = self.train_data[window]['requests'].values
         max_load = np.max(loads)
         normalized_loads = loads / (max_load + 1e-8)
         
@@ -250,17 +224,13 @@ class AutoscalingPipeline:
         return comparison_results
     
     def detect_anomalies(self, window='5m'):
-        """Detect anomalies in the data"""
+        """Detect anomalies in the data with professional DDoS detection"""
         logger.info("=" * 60)
         logger.info(f"PHASE 5: ANOMALY DETECTION ({window})")
         logger.info("=" * 60)
         
-        if window not in self.test_data:
-            logger.warning(f"No test data for window {window}")
-            return {}
-        
-        loads = self.test_data[window]['requests'].values
-        error_rates = self.test_data[window]['error_rate'].values if 'error_rate' in self.test_data[window] else np.zeros_like(loads)
+        loads = self.train_data[window]['requests'].values
+        error_rates = self.train_data[window]['error_rate'].values if 'error_rate' in self.train_data[window].columns else np.zeros_like(loads)
         
         # Detect spikes
         spikes = AnomalyDetector.detect_spike(loads, window=10, threshold=2.0)
@@ -268,22 +238,35 @@ class AutoscalingPipeline:
         
         logger.info(f"Detected {len(spike_indices)} spikes")
         
-        # Detect potential DDoS
-        ddos = AnomalyDetector.detect_ddos(
+        # Detect potential DDoS with advanced scoring
+        ddos_result = AnomalyDetector.detect_ddos(
             loads,
             error_rates,
-            threshold_load=np.max(loads) * 0.8,
-            threshold_error_rate=0.2
+            time_window_minutes=5,
+            adaptive=True
         )
-        ddos_indices = np.where(ddos)[0]
+        
+        ddos_anomalies = ddos_result['anomalies']
+        ddos_scores = ddos_result['scores']
+        ddos_confidence = ddos_result['confidence']
+        ddos_indices = np.where(ddos_anomalies)[0]
         
         logger.info(f"Detected {len(ddos_indices)} potential DDoS events")
+        
+        # High-confidence DDoS alerts
+        high_conf_indices = ddos_indices[ddos_confidence[ddos_indices] > 80]
+        logger.info(f"High-confidence DDoS alerts: {len(high_conf_indices)}")
         
         return {
             'spike_count': len(spike_indices),
             'ddos_count': len(ddos_indices),
+            'ddos_high_confidence_count': len(high_conf_indices),
             'spike_indices': spike_indices[:10].tolist(),
-            'ddos_indices': ddos_indices[:10].tolist()
+            'ddos_indices': ddos_indices[:10].tolist(),
+            'ddos_scores': ddos_scores[:10].tolist(),
+            'ddos_confidence': ddos_confidence[:10].tolist(),
+            'avg_ddos_score': float(np.mean(ddos_scores)),
+            'avg_ddos_confidence': float(np.mean(ddos_confidence))
         }
     
     def _normalize_window_name(self, window):
@@ -310,9 +293,6 @@ class AutoscalingPipeline:
             # Phase 2: Train models (with feature engineering)
             self.train_forecasters(window)
             
-            # Phase 2.5: Analyze feature importance
-            self.analyze_feature_importance(window)
-            
             # Phase 3: Evaluate models
             self.evaluate_forecasters(window)
             
@@ -329,49 +309,22 @@ class AutoscalingPipeline:
         logger.info("PIPELINE COMPLETED")
         logger.info("=" * 60)
     
-    def analyze_feature_importance(self, window='5m'):
-        """Analyze feature importance for tree-based models"""
-        if window not in self.models or not self.models[window]:
-            logger.warning(f"No trained models for window {window}")
-            return {}
-        
-        logger.info("=" * 60)
-        logger.info(f"PHASE 3.5: FEATURE IMPORTANCE ANALYSIS ({window})")
-        logger.info("=" * 60)
-        
-        importance_results = {}
-        
-        for model_name, model in self.models[window].items():
-            try:
-                if hasattr(model, 'model') and hasattr(model.model, 'feature_importances_'):
-                    importances = model.model.feature_importances_
-                    n_lags = getattr(model, 'n_lags', 24)
-                    feature_names = [f'lag_{i+1}' for i in range(n_lags)]
-                    
-                    indices = np.argsort(importances)[::-1]
-                    
-                    importance_results[model_name] = {
-                        'top_10_features': [
-                            {'feature': feature_names[i], 'importance': float(importances[i])}
-                            for i in indices[:10]
-                        ],
-                        'mean_importance': float(np.mean(importances)),
-                        'std_importance': float(np.std(importances))
-                    }
-                    
-                    logger.info(f"\n{model_name} - Top 5 Important Features:")
-                    for i, idx in enumerate(indices[:5], 1):
-                        logger.info(f"  {i}. {feature_names[idx]}: {importances[idx]:.4f}")
-                
-            except Exception as e:
-                logger.warning(f"Could not extract feature importance for {model_name}: {e}")
-        
-        self.feature_importance[window] = importance_results
-        return importance_results
-    
     def _save_results(self):
-        """Save results to files"""
+        """Save results and models to files"""
         output_path = Path(self.config['output_folder'])
+        models_path = output_path / 'models'
+        models_path.mkdir(exist_ok=True)
+        
+        # Save models with joblib
+        logger.info("Saving trained models...")
+        for window, models_dict in self.models.items():
+            window_folder = models_path / window
+            window_folder.mkdir(exist_ok=True)
+            
+            for model_name, model in models_dict.items():
+                model_file = window_folder / f"{model_name}.pkl"
+                joblib.dump(model, model_file)
+                logger.info(f"  ✓ {window}/{model_name}.pkl saved")
         
         # Save evaluation results
         results_file = output_path / 'evaluation_results.json'

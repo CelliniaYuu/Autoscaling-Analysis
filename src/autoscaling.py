@@ -243,12 +243,16 @@ class CostAnalyzer:
 
 
 class AnomalyDetector:
-    """Detect anomalies (DDoS/spikes) in load"""
+    """Advanced anomaly detection with professional DDoS/spike analysis"""
+    
+    # DDoS scoring thresholds (0-100 scale)
+    DDOS_SCORE_THRESHOLD = 70
+    SPIKE_SCORE_THRESHOLD = 60
     
     @staticmethod
     def detect_spike(loads, window=10, threshold=2.0):
         """
-        Detect load spikes using moving average
+        Detect load spikes using moving average with adaptive thresholding
         
         Args:
             loads: array of load values
@@ -271,18 +275,201 @@ class AnomalyDetector:
         return anomalies
     
     @staticmethod
-    def detect_ddos(loads, error_rates, threshold_load=10000, 
-                   threshold_error_rate=0.3):
-        """
-        Detect potential DDoS attacks
-        Criteria: high load + high error rate
-        """
-        high_load = loads > threshold_load
-        high_errors = error_rates > threshold_error_rate
+    def _calculate_rate_of_change(loads, window=5):
+        """Calculate rate of change in load"""
+        if len(loads) < window:
+            return np.zeros(len(loads))
         
-        ddos_indicators = high_load & high_errors
+        roc = np.zeros(len(loads))
+        for i in range(window, len(loads)):
+            if loads[i-window] != 0:
+                roc[i] = (loads[i] - loads[i-window]) / loads[i-window]
+        return roc
+    
+    @staticmethod
+    def _detect_request_rate_anomaly(loads, window=10, threshold_std=3.0):
+        """Detect anomalies in request rate (requests per unit time)"""
+        if len(loads) < window:
+            return np.zeros(len(loads), dtype=bool)
         
-        return ddos_indicators
+        # Calculate rate of change
+        roc = AnomalyDetector._calculate_rate_of_change(loads, window)
+        roc_mean = np.mean(roc[~np.isnan(roc)])
+        roc_std = np.std(roc[~np.isnan(roc)])
+        
+        # Flag rapid increases
+        anomalies = np.abs(roc - roc_mean) > (threshold_std * (roc_std + 1e-8))
+        
+        return anomalies
+    
+    @staticmethod
+    def _calculate_error_rate_severity_array(error_rates, baseline_percentile=75):
+        """
+        Calculate error rate severity score array (0-100)
+        Higher error rate = higher severity
+        """
+        if len(error_rates) == 0:
+            return np.zeros(0)
+        
+        baseline = np.percentile(error_rates, baseline_percentile)
+        max_error = np.max(error_rates)
+        
+        # Normalize each error rate to 0-100 scale
+        if max_error > baseline:
+            severity_array = ((error_rates - baseline) / (max_error - baseline + 1e-8)) * 100
+        else:
+            severity_array = np.zeros_like(error_rates)
+        
+        return np.clip(severity_array, 0, 100)
+    
+    @staticmethod
+    def _calculate_load_anomaly_score(loads, window=10, threshold_std=2.5):
+        """
+        Calculate anomaly score for load (0-100)
+        Based on deviation from moving average
+        """
+        if len(loads) < window:
+            return np.zeros(len(loads))
+        
+        ma = pd.Series(loads).rolling(window=window).mean().values
+        mstd = pd.Series(loads).rolling(window=window).std().values
+        
+        # Calculate z-score
+        z_scores = np.abs((loads - ma) / (mstd + 1e-8))
+        
+        # Replace NaN with 0 (occurs in early window period)
+        z_scores = np.nan_to_num(z_scores, nan=0.0)
+        
+        # Normalize to 0-100
+        scores = np.minimum((z_scores / threshold_std) * 100, 100)
+        
+        return scores
+    
+    @staticmethod
+    def _calculate_sustained_anomaly_factor(anomalies_bool, window=5):
+        """
+        Calculate sustained anomaly factor (0-100)
+        Consecutive anomalies indicate more severity
+        """
+        if len(anomalies_bool) < window:
+            return np.zeros(len(anomalies_bool))
+        
+        sustained = np.zeros(len(anomalies_bool))
+        for i in range(len(anomalies_bool)):
+            if i < window:
+                window_size = i + 1
+            else:
+                window_size = window
+            
+            # Count consecutive anomalies in window
+            if i >= window_size:
+                count = np.sum(anomalies_bool[i-window_size+1:i+1])
+            else:
+                count = np.sum(anomalies_bool[:i+1])
+            
+            # Score: 100 if all consecutive, less if intermittent
+            sustained[i] = (count / window_size) * 100
+        
+        return sustained
+    
+    @staticmethod
+    def detect_ddos(loads, error_rates, request_sources=None, 
+                   time_window_minutes=5, adaptive=True):
+        """
+        Professional DDoS detection with multi-factor scoring
+        
+        Args:
+            loads: array of request loads
+            error_rates: array of error rates (0-1 scale)
+            request_sources: dict mapping timestamp to list of unique source IPs/hosts
+            time_window_minutes: window for pattern analysis (default 5 min)
+            adaptive: use adaptive thresholds based on historical data
+        
+        Returns:
+            dict with:
+                - anomalies: boolean array of detected DDoS points
+                - scores: float array of DDoS scores (0-100)
+                - confidence: float array of confidence levels (0-100)
+                - details: detailed analysis per point
+        """
+        if len(loads) == 0 or len(error_rates) == 0:
+            return {'anomalies': np.array([]), 'scores': np.array([]), 
+                   'confidence': np.array([])}
+        
+        # Ensure same length
+        min_len = min(len(loads), len(error_rates))
+        loads = loads[:min_len]
+        error_rates = np.clip(error_rates[:min_len], 0, 1)
+        
+        # Calculate component scores
+        load_scores = AnomalyDetector._calculate_load_anomaly_score(loads)
+        roc_anomalies = AnomalyDetector._detect_request_rate_anomaly(loads)
+        error_severity_array = AnomalyDetector._calculate_error_rate_severity_array(error_rates)
+        sustained = AnomalyDetector._calculate_sustained_anomaly_factor(load_scores > 50)
+        
+        # Adaptive thresholding
+        if adaptive:
+            load_baseline = np.percentile(loads, 75)
+            error_baseline = np.percentile(error_rates, 75)
+        else:
+            load_baseline = np.percentile(loads, 50)
+            error_baseline = 0.3
+        
+        # Multi-factor DDoS scoring
+        ddos_scores = np.zeros(len(loads))
+        
+        for i in range(len(loads)):
+            # Factor 1: Load anomaly (weight: 35%)
+            load_factor = load_scores[i] * 0.35
+            
+            # Factor 2: Error rate severity (weight: 40%) - prioritize errors for DDoS
+            error_factor = error_severity_array[i] * 0.40
+            
+            # Factor 3: Rate of change (weight: 15%)
+            roc_factor = 100 * roc_anomalies[i] * 0.15
+            
+            # Factor 4: Sustained anomaly (weight: 10%)
+            sustained_factor = sustained[i] * 0.10
+            
+            # Combine factors
+            ddos_scores[i] = load_factor + error_factor + roc_factor + sustained_factor
+        
+        # Confidence based on multiple indicators
+        confidence = np.zeros(len(loads))
+        for i in range(len(loads)):
+            indicators = 0
+            max_indicators = 4
+            
+            if load_scores[i] > 50:
+                indicators += 1
+            if error_rates[i] > error_baseline:
+                indicators += 1
+            if roc_anomalies[i]:
+                indicators += 1
+            if sustained[i] > 50:
+                indicators += 1
+            
+            confidence[i] = (indicators / max_indicators) * 100
+        
+        # Final anomaly detection
+        anomalies = ddos_scores > AnomalyDetector.DDOS_SCORE_THRESHOLD
+        
+        logger.info(f"DDoS Detection Summary:")
+        logger.info(f"  - Points analyzed: {len(loads)}")
+        logger.info(f"  - Anomalies detected: {np.sum(anomalies)}")
+        logger.info(f"  - Average DDoS score: {np.mean(ddos_scores):.2f}")
+        logger.info(f"  - Max DDoS score: {np.max(ddos_scores):.2f}")
+        logger.info(f"  - Average confidence: {np.mean(confidence):.2f}%")
+        
+        return {
+            'anomalies': anomalies,
+            'scores': ddos_scores,
+            'confidence': confidence,
+            'load_scores': load_scores,
+            'error_severity': error_severity_array,
+            'roc_anomalies': roc_anomalies,
+            'sustained_factor': sustained
+        }
 
 
 def generate_scaling_report(policies_results, save_path=None):

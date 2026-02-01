@@ -1,9 +1,6 @@
-# Large data files
-DATA/combined.txt
-DATA/test.txt
-DATA/train.txt
-DATA/cleaned_data.csv
-DATA/cleaned_data.txt
+# Large data files - ignore entire DATA directory
+DATA/
+!DATA/.gitkeep
 
 # Python cache
 __pycache__/

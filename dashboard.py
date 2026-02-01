@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 import requests
+import joblib
+from pathlib import Path
 
 from src.forecasters import create_forecaster
 from src.autoscaling import AnomalyDetector, CostAnalyzer
@@ -56,6 +58,10 @@ if 'data' not in st.session_state:
     st.session_state.data = None
 if 'forecast' not in st.session_state:
     st.session_state.forecast = None
+if 'models' not in st.session_state:
+    st.session_state.models = None
+if 'selected_window' not in st.session_state:
+    st.session_state.selected_window = '5min'
 
 
 # ===== Functions =====
@@ -85,6 +91,55 @@ def normalize_dataframe(df):
         df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     
     return df
+
+
+def load_trained_models(window='5min'):
+    """Load trained models from disk"""
+    models_path = Path('outputs/models') / window
+    
+    if not models_path.exists():
+        return None
+    
+    models = {}
+    for model_file in models_path.glob('*.pkl'):
+        model_name = model_file.stem
+        try:
+            models[model_name] = joblib.load(model_file)
+        except Exception as e:
+            st.warning(f"Failed to load {model_name}: {e}")
+    
+    return models if models else None
+
+
+def get_available_windows():
+    """Get list of available time windows from trained models"""
+    models_path = Path('outputs/models')
+    if not models_path.exists():
+        return []
+    
+    windows = [d.name for d in models_path.iterdir() if d.is_dir()]
+    return sorted(windows)
+
+
+def make_predictions(models, data, n_steps=24):
+    """Make predictions using loaded models"""
+    if models is None or len(models) == 0:
+        st.error("No models available for predictions")
+        return None
+    
+    # Use requests column for prediction
+    train_series = data['requests'].values
+    
+    predictions = {}
+    for model_name, model in models.items():
+        try:
+            pred = model.predict(steps=min(n_steps, len(train_series)))
+            if pred is not None:
+                predictions[model_name] = pred
+        except Exception as e:
+            st.warning(f"Prediction failed for {model_name}: {e}")
+    
+    return predictions if predictions else None
 
 def generate_synthetic_data(days=30, freq='5min'):
     """Generate synthetic load data for demo"""
@@ -285,21 +340,43 @@ def main():
         
         # New: Load cleaned data
         st.markdown("---")
-        if st.button("📁 Load Cleaned Data (from DATA/)"):
+        if st.button("📁 Load Test Data (from DATA/)"):
             try:
-                cleaned_path = "DATA/cleaned_data.csv"
+                cleaned_path = "DATA/clean_data_test.csv"
                 if os.path.exists(cleaned_path):
                     df = pd.read_csv(cleaned_path)
                     df = normalize_dataframe(df)
                     st.session_state.data = df
                     file_size_mb = os.path.getsize(cleaned_path) / (1024*1024)
-                    st.success(f"✓ Cleaned data loaded! {len(df):,} records ({file_size_mb:.0f} MB)")
+                    st.success(f"✓ Test data loaded! {len(df):,} records ({file_size_mb:.0f} MB)")
                 else:
-                    st.error("❌ cleaned_data.csv not found in DATA/")
+                    st.error("❌ clean_data_test.csv not found in DATA/")
             except Exception as e:
-                st.error(f"❌ Error loading cleaned data: {str(e)}")
+                st.error(f"❌ Error loading test data: {str(e)}")
         
-        elif data_source == "Use API":
+        # New: Load trained models
+        st.markdown("---")
+        st.subheader("🤖 Trained Models")
+        available_windows = get_available_windows()
+        
+        if available_windows:
+            selected_window = st.selectbox("Select Time Window", available_windows)
+            st.session_state.selected_window = selected_window
+            
+            if st.button("Load Models for Prediction"):
+                models = load_trained_models(selected_window)
+                if models:
+                    st.session_state.models = models
+                    st.success(f"✓ Loaded {len(models)} models for {selected_window}")
+                else:
+                    st.error(f"No models found for {selected_window}")
+        else:
+            st.warning("⚠️ No trained models found. Run train.py first!")
+        
+        st.markdown("---")
+        
+        # Use API section
+        if data_source == "Use API":
             api_url = st.text_input("API URL", value="http://localhost:8000")
             
             col1, col2 = st.columns(2)
@@ -425,10 +502,11 @@ def main():
         st.session_state.data = df
         
         # Tabs
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "📈 Load Analysis",
             "📊 Metrics (Extended)",
             "🔮 Forecast",
+            "🎯 Model Predictions",
             "⚙️ Autoscaling",
             "🚨 Anomalies",
             "📉 Data Quality",
@@ -605,8 +683,71 @@ def main():
                 })
                 st.dataframe(forecast_df, use_container_width=True)
         
-        # Tab 4: Autoscaling
+        # Tab 4: Model Predictions (from trained models)
         with tab4:
+            st.subheader("🎯 Predictions from Trained Models")
+            
+            if st.session_state.models is None:
+                st.warning("⚠️ No models loaded. Load models from the sidebar first.")
+            else:
+                st.info(f"✓ Loaded {len(st.session_state.models)} models for window: {st.session_state.selected_window}")
+                
+                if st.button("🔮 Generate Predictions"):
+                    with st.spinner("Generating predictions..."):
+                        try:
+                            predictions = make_predictions(st.session_state.models, df, forecast_steps)
+                            
+                            if predictions:
+                                st.success(f"✓ Generated predictions from {len(predictions)} models")
+                                
+                                # Plot all predictions
+                                fig = go.Figure()
+                                
+                                # Historical data
+                                fig.add_trace(go.Scatter(
+                                    y=df['requests'].values[-100:],
+                                    name='Historical Data',
+                                    line=dict(color='blue', width=2),
+                                    mode='lines'
+                                ))
+                                
+                                # Model predictions
+                                colors = ['red', 'green', 'orange', 'purple', 'brown']
+                                for idx, (model_name, pred) in enumerate(predictions.items()):
+                                    x_forecast = list(range(100, 100 + len(pred)))
+                                    fig.add_trace(go.Scatter(
+                                        x=x_forecast,
+                                        y=pred,
+                                        name=f'{model_name} Prediction',
+                                        line=dict(color=colors[idx % len(colors)], dash='dash'),
+                                        mode='lines+markers'
+                                    ))
+                                
+                                fig.update_layout(
+                                    title=f"Model Predictions ({st.session_state.selected_window})",
+                                    xaxis_title="Time Step",
+                                    yaxis_title="Requests",
+                                    hovermode='x unified',
+                                    height=500
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                # Predictions table
+                                st.markdown("---")
+                                for model_name, pred in predictions.items():
+                                    with st.expander(f"📋 {model_name.upper()} Predictions"):
+                                        pred_df = pd.DataFrame({
+                                            'Step': range(1, len(pred) + 1),
+                                            'Predicted Load': pred
+                                        })
+                                        st.dataframe(pred_df, use_container_width=True)
+                            else:
+                                st.error("❌ Failed to generate predictions")
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+        
+        # Tab 5: Autoscaling (was tab4)
+        with tab5:
             st.subheader("Scaling Policy Comparison")
             
             if st.button("📊 Analyze Scaling Policies"):
@@ -640,8 +781,8 @@ def main():
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
         
-        # Tab 5: Anomalies
-        with tab5:
+        # Tab 6: Anomalies
+        with tab6:
             st.subheader("Anomaly Detection")
             
             col1, col2 = st.columns(2)
@@ -661,41 +802,84 @@ def main():
                                 window=10,
                                 threshold=anomaly_threshold
                             )
+                            
+                            # Plot
+                            fig = plot_anomalies(
+                                df['requests'].values,
+                                anomalies,
+                                'spike_detection'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Statistics
+                            anomaly_count = np.sum(anomalies)
+                            anomaly_pct = (anomaly_count / len(anomalies)) * 100
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("Anomalies Detected", f"{anomaly_count}")
+                            with col2:
+                                st.metric("Percentage", f"{anomaly_pct:.2f}%")
                         else:
-                            anomalies = AnomalyDetector.detect_ddos(
+                            # Advanced DDoS Detection
+                            ddos_result = AnomalyDetector.detect_ddos(
                                 df['requests'].values,
                                 df['error_rate'].values,
-                                threshold_load=df['requests'].max() * 0.8,
-                                threshold_error_rate=0.2
+                                adaptive=True
                             )
-                        
-                        # Plot
-                        fig = plot_anomalies(
-                            df['requests'].values,
-                            anomalies,
-                            detection_method.lower().replace(' ', '_')
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        
+                            
+                            anomalies = ddos_result['anomalies']
+                            scores = ddos_result['scores']
+                            confidence = ddos_result['confidence']
+                            
+                            # Plot with scores
+                            fig = go.Figure()
+                            
+                            fig.add_trace(go.Scatter(
+                                y=df['requests'].values,
+                                name='Load',
+                                line=dict(color='blue'),
+                                fill='tozeroy'
+                            ))
+                            
+                            # Highlight anomalies with color gradient based on score
+                            anomaly_indices = np.where(anomalies)[0]
+                            if len(anomaly_indices) > 0:
+                                fig.add_trace(go.Scatter(
+                                    x=anomaly_indices,
+                                    y=df['requests'].values[anomaly_indices],
+                                    mode='markers',
+                                    name='DDoS Detected',
+                                    marker=dict(
+                                        size=10,
+                                        color=scores[anomaly_indices],
+                                        colorscale='Reds',
+                                        showscale=True,
+                                        colorbar=dict(title="DDoS Score"),
+                                        line=dict(color='darkred', width=2)
+                                    )
+                                ))
+                            
+
+
                         # Statistics
                         anomaly_count = np.sum(anomalies)
                         anomaly_pct = (anomaly_count / len(anomalies)) * 100
                         
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if anomaly_pct > 5:
-                                st.markdown(f"""
-                                    <div class='alert-warning'>
-                                    🚨 <b>Anomalies Detected</b><br>
-                                    {anomaly_count} anomalies ({anomaly_pct:.1f}%)
-                                    </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.success(f"✓ {anomaly_count} anomalies detected ({anomaly_pct:.1f}%)")
+                        if anomaly_pct > 5:
+                            st.markdown(f"""
+                                <div class='alert-warning'>
+                                🚨 <b>Anomalies Detected</b><br>
+                                {anomaly_count} anomalies ({anomaly_pct:.1f}%)
+                                </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.success(f"✓ {anomaly_count} anomalies detected ({anomaly_pct:.1f}%)")
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
-        # Tab 6: Data Quality
-        with tab6:
+        
+        # Tab 7: Data Quality
+        with tab7:
             st.subheader("📉 Data Quality Analysis")
             st.info("💡 Assess data completeness, duplicates, missing values, and gaps")
             
@@ -763,8 +947,8 @@ def main():
                 else:
                     st.warning(f"⚠️ {check.replace('✓ ', '')}")
         
-        # Tab 7: Feature Importance
-        with tab7:
+        # Tab 8: Feature Importance
+        with tab8:
             st.subheader("⭐ Feature Importance Analysis")
             st.info("💡 Which time-lagged features are most important for prediction?")
             
@@ -837,8 +1021,8 @@ def main():
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
         
-        # Tab 8: Cost Analysis
-        with tab8:
+        # Tab 9: Cost Analysis
+        with tab9:
             st.subheader("💰 Cost Analysis")
             
             st.info("💡 Analyze the financial impact of different scaling policies")

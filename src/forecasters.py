@@ -414,7 +414,18 @@ class LSTMForecaster(BaseForecaster):
             ])
             
             self.model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-            self.model.fit(X, y, epochs=self.epochs, verbose=0)
+            
+            # Add early stopping and reduce batch size for faster training
+            from tensorflow.keras.callbacks import EarlyStopping
+            early_stop = EarlyStopping(monitor='loss', patience=3, restore_best_weights=True)
+            
+            self.model.fit(
+                X, y, 
+                epochs=self.epochs, 
+                verbose=0,
+                batch_size=32,
+                callbacks=[early_stop]
+            )
             
             self.last_sequence = data_scaled[-self.n_lags:]
             logger.info("LSTM model fitted successfully")
