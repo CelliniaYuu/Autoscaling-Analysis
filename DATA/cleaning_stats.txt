@@ -1,10 +1,18 @@
 DATA CLEANING STATISTICS
 ==================================================
 
-Raw records:           3,453,298
-Duplicates removed:    1,556 (0.0%)
-Invalid removed:       0 (0.0%)
-Cleaned records:       3,451,742
-Outliers detected:     37,951 (1.10%)
-Gaps (>5 min):         50
-Date range:            1995-07-01 00:00:01 - 1995-08-31 23:59:53
+TRAIN DATA:
+Raw records:           2,928,199
+Duplicates removed:    1,359
+Invalid removed:       0
+Cleaned records:       2,926,840
+Outliers detected:     33,069
+Gaps (>5 min):         48
+
+TEST DATA:
+Raw records:           525,100
+Duplicates removed:    197
+Invalid removed:       0
+Cleaned records:       524,903
+Outliers detected:     4,742
+Gaps (>5 min):         2
