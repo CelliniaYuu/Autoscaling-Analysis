@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  # Data processing and model training
+  training:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autoscaling-training
+    volumes:
+      - ./DATA:/app/DATA
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+    environment:
+      - DATA_FOLDER=./DATA
+      - TRAIN_DATA_PATH=./DATA/clean_data_train.txt
+      - TEST_DATA_PATH=./DATA/clean_data_test.txt
+      - OUTPUT_FOLDER=./outputs
+      - RANDOM_STATE=42
+      - LOG_LEVEL=INFO
+    command: >
+      sh -c "
+        echo '=== Starting Data Cleaning ===' &&
+        python clean_data.py &&
+        echo '=== Starting Model Training ===' &&
+        python train.py
+      "
+    networks:
+      - autoscaling-network
+    restart: "no"
+    depends_on:
+      - setup
+
+  # FastAPI server for predictions
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autoscaling-api
+    volumes:
+      - ./DATA:/app/DATA
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+    environment:
+      - DATA_FOLDER=./DATA
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+      - RANDOM_STATE=42
+    ports:
+      - "8000:8000"
+    command: python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - autoscaling-network
+    depends_on:
+      - training
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Streamlit dashboard
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autoscaling-dashboard
+    volumes:
+      - ./DATA:/app/DATA
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+    environment:
+      - DATA_FOLDER=./DATA
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - LOG_LEVEL=INFO
+      - RANDOM_STATE=42
+    ports:
+      - "8501:8501"
+    command: streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+    networks:
+      - autoscaling-network
+    depends_on:
+      - training
+    restart: unless-stopped
+
+  # Setup container for initialization
+  setup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autoscaling-setup
+    volumes:
+      - ./DATA:/app/DATA
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+    environment:
+      - LOG_LEVEL=INFO
+    command: python verify_setup.py
+    networks:
+      - autoscaling-network
+    restart: "no"
+
+networks:
+  autoscaling-network:
+    driver: bridge
+
+volumes:
+  model_storage:
+  data_storage:
+  output_storage:

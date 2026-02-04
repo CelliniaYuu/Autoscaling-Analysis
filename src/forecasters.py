@@ -285,6 +285,7 @@ class XGBoostForecaster(BaseForecaster):
             'learning_rate': 0.1,
             'n_estimators': 100
         }
+        self.scaler = MinMaxScaler()  # Add scaler for normalization
     
     def create_features(self, data):
         """Create lagged features"""
@@ -298,10 +299,13 @@ class XGBoostForecaster(BaseForecaster):
     def fit(self, train_data):
         """Fit XGBoost model"""
         try:
-            X, y = self.create_features(train_data.values)
+            # Normalize data using MinMaxScaler
+            data_scaled = self.scaler.fit_transform(train_data.values.reshape(-1, 1)).flatten()
+            X, y = self.create_features(data_scaled)
+            
             self.model = xgb.XGBRegressor(**self.params)
             self.model.fit(X, y)
-            self.last_sequence = train_data.values[-self.n_lags:]
+            self.last_sequence = data_scaled[-self.n_lags:]
             logger.info("XGBoost model fitted successfully")
             return True
         except Exception as e:
@@ -319,7 +323,10 @@ class XGBoostForecaster(BaseForecaster):
                 predictions.append(pred)
                 sequence = np.append(sequence[1:], pred)
             
-            return np.array(predictions)
+            # Inverse transform to get actual values
+            predictions = np.array(predictions).reshape(-1, 1)
+            predictions = self.scaler.inverse_transform(predictions)
+            return predictions.flatten()
         except Exception as e:
             logger.error(f"Error predicting with XGBoost: {e}")
             return None
@@ -336,6 +343,7 @@ class RandomForestForecaster(BaseForecaster):
             'max_depth': max_depth,
             'random_state': 42
         }
+        self.scaler = MinMaxScaler()  # Add scaler for normalization
     
     def create_features(self, data):
         """Create lagged features"""
@@ -349,10 +357,13 @@ class RandomForestForecaster(BaseForecaster):
     def fit(self, train_data):
         """Fit Random Forest model"""
         try:
-            X, y = self.create_features(train_data.values)
+            # Normalize data using MinMaxScaler
+            data_scaled = self.scaler.fit_transform(train_data.values.reshape(-1, 1)).flatten()
+            X, y = self.create_features(data_scaled)
+            
             self.model = RandomForestRegressor(**self.params)
             self.model.fit(X, y)
-            self.last_sequence = train_data.values[-self.n_lags:]
+            self.last_sequence = data_scaled[-self.n_lags:]
             logger.info("RandomForest model fitted successfully")
             return True
         except Exception as e:
@@ -370,7 +381,10 @@ class RandomForestForecaster(BaseForecaster):
                 predictions.append(pred)
                 sequence = np.append(sequence[1:], pred)
             
-            return np.array(predictions)
+            # Inverse transform to get actual values
+            predictions = np.array(predictions).reshape(-1, 1)
+            predictions = self.scaler.inverse_transform(predictions)
+            return predictions.flatten()
         except Exception as e:
             logger.error(f"Error predicting with RandomForest: {e}")
             return None
@@ -499,7 +513,28 @@ def create_forecaster(model_name, **kwargs):
     if model_name.lower() not in model_map:
         raise ValueError(f"Unknown model: {model_name}")
     
-    return model_map[model_name.lower()](**kwargs)
+    # Filter kwargs based on model type
+    model_lower = model_name.lower()
+    
+    # ExponentialSmoothing/ARIMA only accepts: alpha
+    if model_lower in ['arima', 'exponentialsmoothing']:
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k == 'alpha'}
+    # Seasonal/SARIMA only accepts: season_length
+    elif model_lower in ['sarima', 'seasonal']:
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k == 'season_length'}
+    # Prophet accepts: yearly_seasonality, daily_seasonality
+    elif model_lower == 'prophet':
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in ['yearly_seasonality', 'daily_seasonality']}
+    # XGBoost/RandomForest/LightGBM accept: n_lags, n_estimators, max_depth
+    elif model_lower in ['xgboost', 'randomforest', 'lightgbm']:
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in ['n_lags', 'n_estimators', 'max_depth']}
+    # LSTM accepts: n_lags, units, epochs
+    elif model_lower == 'lstm':
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in ['n_lags', 'units', 'epochs']}
+    else:
+        filtered_kwargs = kwargs
+    
+    return model_map[model_lower](**filtered_kwargs)
 
 
 if __name__ == "__main__":

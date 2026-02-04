@@ -2,24 +2,10 @@
 Streamlit dashboard for autoscaling analysis
 """
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime, timedelta
-import os
-from dotenv import load_dotenv
-import requests
-import joblib
-from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
 
-from src.forecasters import create_forecaster
-from src.autoscaling import AnomalyDetector, CostAnalyzer
-from src.autoscaling import ThresholdScalingPolicy, PredictiveScalingPolicy, HysteresisScalingPolicy
-
-load_dotenv()
-
-# ===== Page Config =====
+# ===== Page Config (MUST BE FIRST!) =====
 st.set_page_config(
     page_title="Autoscaling Analysis Dashboard",
     page_icon="📊",
@@ -27,47 +13,67 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ===== Custom CSS =====
-st.markdown("""
-    <style>
-    .metric-box {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        margin: 10px 0;
-    }
-    .alert-warning {
-        background-color: #fff3cd;
-        padding: 15px;
-        border-radius: 5px;
-        border-left: 4px solid #ffc107;
-        margin: 10px 0;
-    }
-    .alert-danger {
-        background-color: #f8d7da;
-        padding: 15px;
-        border-radius: 5px;
-        border-left: 4px solid #dc3545;
-        margin: 10px 0;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# ===== Initialize session state EARLY =====
+def initialize_session():
+    if 'data' not in st.session_state:
+        st.session_state.data = None
+    if 'forecast' not in st.session_state:
+        st.session_state.forecast = None
+    if 'models' not in st.session_state:
+        st.session_state.models = None
+    if 'selected_window' not in st.session_state:
+        st.session_state.selected_window = '5min'
+    if 'last_forecast_params' not in st.session_state:
+        st.session_state.last_forecast_params = None
+    if 'last_predictions_params' not in st.session_state:
+        st.session_state.last_predictions_params = None
 
-# ===== Session State =====
-if 'data' not in st.session_state:
-    st.session_state.data = None
-if 'forecast' not in st.session_state:
-    st.session_state.forecast = None
-if 'models' not in st.session_state:
-    st.session_state.models = None
-if 'selected_window' not in st.session_state:
-    st.session_state.selected_window = '5min'
+initialize_session()
+
+# ===== Then import everything else =====
+import pandas as pd
+import numpy as np
+import random
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
+import joblib
+from pathlib import Path
+
+# ===== Set Random Seeds for Reproducibility =====
+SEED = 42
+np.random.seed(SEED)
+random.seed(SEED)
+
+try:
+    import tensorflow as tf
+    tf.random.set_seed(SEED)
+    tf.keras.utils.set_random_seed(SEED)
+except ImportError:
+    pass
+
+try:
+    import torch
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+except ImportError:
+    pass
+
+from src.forecasters import create_forecaster
+from src.autoscaling import AnomalyDetector, CostAnalyzer, ThresholdScalingPolicy, PredictiveScalingPolicy, HysteresisScalingPolicy
+
+load_dotenv()
 
 
 # ===== Functions =====
 
+@st.cache_data
 def normalize_dataframe(df):
     """Normalize dataframe to have 'requests' column"""
+    df = df.copy()  # Don't modify original
     if 'requests' not in df.columns:
         # If no requests column, try to create from bytes or other columns
         if 'bytes' in df.columns:
@@ -83,7 +89,6 @@ def normalize_dataframe(df):
             if numeric_cols:
                 df['requests'] = df[numeric_cols[0]]
             else:
-                st.error("Cannot find numeric column for requests")
                 return None
     
     # Ensure timestamp column exists and is datetime
@@ -93,6 +98,7 @@ def normalize_dataframe(df):
     return df
 
 
+@st.cache_resource
 def load_trained_models(window='5min'):
     """Load trained models from disk"""
     models_path = Path('outputs/models') / window
@@ -111,6 +117,7 @@ def load_trained_models(window='5min'):
     return models if models else None
 
 
+@st.cache_data
 def get_available_windows():
     """Get list of available time windows from trained models"""
     models_path = Path('outputs/models')
@@ -141,6 +148,7 @@ def make_predictions(models, data, n_steps=24):
     
     return predictions if predictions else None
 
+@st.cache_data
 def generate_synthetic_data(days=30, freq='5min'):
     """Generate synthetic load data for demo"""
     # Create time index
@@ -172,6 +180,7 @@ def generate_synthetic_data(days=30, freq='5min'):
     return df
 
 
+@st.cache_data
 def plot_load_forecast(historical, forecast, window_title):
     """Plot historical data and forecast"""
     fig = go.Figure()
@@ -205,72 +214,7 @@ def plot_load_forecast(historical, forecast, window_title):
     return fig
 
 
-def plot_scaling_events(loads, scaling_history):
-    """Plot load with scaling events"""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        y=loads,
-        name='Load',
-        line=dict(color='blue'),
-        fill='tozeroy'
-    ))
-    
-    # Add scaling events
-    for event in scaling_history:
-        if event['action'] == 'scale_out':
-            color = 'red'
-            symbol = 'triangle-up'
-        else:
-            color = 'green'
-            symbol = 'triangle-down'
-        
-        fig.add_trace(go.Scatter(
-            x=[event['index']],
-            y=[event['load']],
-            mode='markers',
-            name=event['action'],
-            marker=dict(size=12, color=color, symbol=symbol),
-            showlegend=False
-        ))
-    
-    fig.update_layout(
-        title="Load with Scaling Events",
-        xaxis_title="Time",
-        yaxis_title="Requests",
-        height=400,
-        hovermode='x'
-    )
-    
-    return fig
-
-
-def plot_cost_comparison(policies_results):
-    """Plot cost comparison between policies"""
-    policies = list(policies_results.keys())
-    costs = [policies_results[p]['total_cost'] for p in policies]
-    events = [policies_results[p]['scaling_events'] for p in policies]
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        x=policies,
-        y=costs,
-        name='Total Cost',
-        marker_color='steelblue'
-    ))
-    
-    fig.update_layout(
-        title="Cost Comparison Between Policies",
-        xaxis_title="Policy",
-        yaxis_title="Cost ($)",
-        height=400,
-        showlegend=True
-    )
-    
-    return fig
-
-
+@st.cache_data
 def plot_anomalies(loads, anomalies, anomaly_type='spike'):
     """Plot anomalies in load"""
     fig = go.Figure()
@@ -304,6 +248,23 @@ def plot_anomalies(loads, anomalies, anomaly_type='spike'):
     return fig
 
 
+@st.cache_data
+def read_csv_file(uploaded_file):
+    """Read CSV file and return dataframe"""
+    return pd.read_csv(uploaded_file)
+
+
+def generate_sample_data(length=2000):
+    """Generate synthetic historical data with trend & seasonality"""
+    t = np.arange(length)
+    base_load = 100
+    trend = t * 0.05
+    seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
+    noise = np.random.normal(0, 10, length)
+    sample_data = (base_load + trend + seasonality + noise).tolist()
+    return [max(50, x) for x in sample_data]
+
+
 # ===== Main App =====
 
 def main():
@@ -331,67 +292,24 @@ def main():
                 st.success(f"✓ Data generated! {len(df)} data points ({days} days × {freq} interval)")
         
         elif data_source == "Upload CSV":
-            uploaded_file = st.file_uploader("Upload CSV file", type=['csv'])
+            uploaded_file = st.file_uploader("📁 Upload CSV from your computer", type=['csv'])
             if uploaded_file:
-                df = pd.read_csv(uploaded_file)
+                df = read_csv_file(uploaded_file)
                 df = normalize_dataframe(df)
                 st.session_state.data = df
-                st.success(f"✓ Data uploaded! {len(df)} data points")
+                file_size_mb = uploaded_file.size / (1024*1024)
+                st.success(f"✓ Data uploaded! {len(df):,} records ({file_size_mb:.2f} MB)")
         
-        # New: Load cleaned data
-        st.markdown("---")
-        if st.button("📁 Load Test Data (from DATA/)"):
-            try:
-                cleaned_path = "DATA/clean_data_test.csv"
-                if os.path.exists(cleaned_path):
-                    df = pd.read_csv(cleaned_path)
-                    df = normalize_dataframe(df)
-                    st.session_state.data = df
-                    file_size_mb = os.path.getsize(cleaned_path) / (1024*1024)
-                    st.success(f"✓ Test data loaded! {len(df):,} records ({file_size_mb:.0f} MB)")
-                else:
-                    st.error("❌ clean_data_test.csv not found in DATA/")
-            except Exception as e:
-                st.error(f"❌ Error loading test data: {str(e)}")
-        
-        # New: Load trained models
-        st.markdown("---")
-        st.subheader("🤖 Trained Models")
-        available_windows = get_available_windows()
-        
-        if available_windows:
-            selected_window = st.selectbox("Select Time Window", available_windows)
-            st.session_state.selected_window = selected_window
-            
-            if st.button("Load Models for Prediction"):
-                models = load_trained_models(selected_window)
-                if models:
-                    st.session_state.models = models
-                    st.success(f"✓ Loaded {len(models)} models for {selected_window}")
-                else:
-                    st.error(f"No models found for {selected_window}")
-        else:
-            st.warning("⚠️ No trained models found. Run train.py first!")
-        
-        st.markdown("---")
-        
-        # Use API section
-        if data_source == "Use API":
+        elif data_source == "Use API":
             api_url = st.text_input("API URL", value="http://localhost:8000")
             
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("📊 Get Forecast from API"):
                     try:
-                        # Generate sample historical data with trend & seasonality
-                        t = np.arange(2000)
-                        base_load = 100
-                        trend = t * 0.05
-                        seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
-                        noise = np.random.normal(0, 10, len(t))
-                        sample_data = (base_load + trend + seasonality + noise).tolist()
-                        sample_data = [max(50, x) for x in sample_data]  # Min 50
+                        sample_data = generate_sample_data(2000)
                         
+                        import requests
                         response = requests.post(
                             f"{api_url}/forecast",
                             json={
@@ -406,8 +324,6 @@ def main():
                             result = response.json()
                             forecast = result['forecast']
                             
-                            # Create dataframe with BOTH historical and forecast
-                            # Historical data (2000 points from past)
                             now = datetime.now()
                             hist_timestamps = [now - timedelta(minutes=5*(len(sample_data)-i)) for i in range(len(sample_data))]
                             hist_bytes = [s * np.random.uniform(500, 2000) for s in sample_data]
@@ -420,7 +336,6 @@ def main():
                                 'error_rate': hist_error_rate
                             })
                             
-                            # Forecast data (24 points in future)
                             forecast_timestamps = [now + timedelta(minutes=5*i) for i in range(1, len(forecast)+1)]
                             forecast_bytes = [f * np.random.uniform(500, 2000) for f in forecast]
                             forecast_error_rate = [0.02 + 0.01 * np.sin(i/10) for i in range(len(forecast))]
@@ -432,10 +347,9 @@ def main():
                                 'error_rate': forecast_error_rate
                             })
                             
-                            # Combine both
                             df = pd.concat([hist_df, forecast_df], ignore_index=True)
                             st.session_state.data = df
-                            st.success(f"✓ Forecast loaded! {len(hist_df)} historical + {len(forecast_df)} forecast = {len(df)} total data points")
+                            st.success(f"✓ Forecast loaded! {len(hist_df)} historical + {len(forecast_df)} forecast = {len(df)} total")
                         else:
                             st.error(f"❌ API error: {response.status_code}")
                     except Exception as e:
@@ -444,15 +358,9 @@ def main():
             with col2:
                 if st.button("⚡ Get Scaling Recommendation"):
                     try:
-                        # Generate sample historical data with trend & seasonality
-                        t = np.arange(2000)
-                        base_load = 100
-                        trend = t * 0.05
-                        seasonality = 30 * np.sin(2 * np.pi * t / 288)  # 24h cycle with 5min intervals
-                        noise = np.random.normal(0, 10, len(t))
-                        sample_data = (base_load + trend + seasonality + noise).tolist()
-                        sample_data = [max(50, x) for x in sample_data]  # Min 50
+                        sample_data = generate_sample_data(2000)
                         
+                        import requests
                         response = requests.post(
                             f"{api_url}/recommend-scaling",
                             json={
@@ -479,13 +387,32 @@ def main():
                     except Exception as e:
                         st.error(f"❌ Connection failed: {str(e)}")
         
+        # New: Load trained models
+        st.markdown("---")
+        st.subheader("🤖 Trained Models")
+        available_windows = get_available_windows()
+        
+        if available_windows:
+            selected_window = st.selectbox("Select Time Window", available_windows)
+            st.session_state.selected_window = selected_window
+            
+            if st.button("Load Models for Prediction"):
+                models = load_trained_models(selected_window)
+                if models:
+                    st.session_state.models = models
+                    st.success(f"✓ Loaded {len(models)} models for {selected_window}")
+                else:
+                    st.error(f"No models found for {selected_window}")
+        else:
+            st.warning("⚠️ No trained models found. Run train.py first!")
+        
         st.markdown("---")
         
         # Analysis settings
         st.subheader("Analysis Settings")
-        window = st.selectbox("Time Window", ["1m", "5m", "15m"])
-        model_type = st.selectbox("Forecast Model", ["xgboost", "lightgbm", "arima", "lstm"])
-        forecast_steps = st.slider("Forecast Steps", 6, 72, 24)
+        window = st.selectbox("Time Window", ["1m", "5m", "15m"], key="analysis_window")
+        model_type = st.selectbox("Forecast Model", ["xgboost", "lightgbm", "arima", "lstm"], key="forecast_model_type")
+        forecast_steps = st.slider("Forecast Steps", 6, 72, 24, key="forecast_steps_slider")
         
         st.markdown("---")
         
@@ -493,13 +420,10 @@ def main():
         st.subheader("Scaling Policy")
         scale_out_threshold = st.slider("Scale-Out Threshold", 0.5, 1.0, 0.75)
         scale_in_threshold = st.slider("Scale-In Threshold", 0.0, 0.5, 0.30)
-        cooldown_minutes = st.slider("Cooldown (minutes)", 5, 60, 10)
     
     # Main content
     if st.session_state.data is not None and len(st.session_state.data) > 0:
         df = st.session_state.data
-        df = normalize_dataframe(df)  # Ensure normalized
-        st.session_state.data = df
         
         # Tabs
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
@@ -797,44 +721,29 @@ def main():
                 with st.spinner("Detecting anomalies..."):
                     try:
                         if detection_method == "Spike Detection":
+                            # Improved spike detection with percentile-based thresholding
+                            # anomaly_threshold now represents percentile (90-99)
+                            # Convert slider (1.0-4.0) to percentile equivalent
+                            percentile = 90 + (anomaly_threshold - 1.0) * 2.5  # Maps to 90-99.75
+                            
                             anomalies = AnomalyDetector.detect_spike(
                                 df['requests'].values,
                                 window=10,
-                                threshold=anomaly_threshold
+                                threshold=anomaly_threshold,  # Legacy param (unused)
+                                min_duration=3,  # Requires 3+ consecutive points
+                                percentile=percentile
                             )
-                            
-                            # Plot
-                            fig = plot_anomalies(
-                                df['requests'].values,
-                                anomalies,
-                                'spike_detection'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Statistics
-                            anomaly_count = np.sum(anomalies)
-                            anomaly_pct = (anomaly_count / len(anomalies)) * 100
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Anomalies Detected", f"{anomaly_count}")
-                            with col2:
-                                st.metric("Percentage", f"{anomaly_pct:.2f}%")
+                            fig = plot_anomalies(df['requests'].values, anomalies, 'spike')
                         else:
-                            # Advanced DDoS Detection
                             ddos_result = AnomalyDetector.detect_ddos(
                                 df['requests'].values,
-                                df['error_rate'].values,
+                                df['error_rate'].values if 'error_rate' in df.columns else np.zeros(len(df)),
                                 adaptive=True
                             )
-                            
                             anomalies = ddos_result['anomalies']
-                            scores = ddos_result['scores']
-                            confidence = ddos_result['confidence']
                             
-                            # Plot with scores
+                            # Plot with DDoS scores
                             fig = go.Figure()
-                            
                             fig.add_trace(go.Scatter(
                                 y=df['requests'].values,
                                 name='Load',
@@ -842,7 +751,6 @@ def main():
                                 fill='tozeroy'
                             ))
                             
-                            # Highlight anomalies with color gradient based on score
                             anomaly_indices = np.where(anomalies)[0]
                             if len(anomaly_indices) > 0:
                                 fig.add_trace(go.Scatter(
@@ -850,29 +758,23 @@ def main():
                                     y=df['requests'].values[anomaly_indices],
                                     mode='markers',
                                     name='DDoS Detected',
-                                    marker=dict(
-                                        size=10,
-                                        color=scores[anomaly_indices],
-                                        colorscale='Reds',
-                                        showscale=True,
-                                        colorbar=dict(title="DDoS Score"),
-                                        line=dict(color='darkred', width=2)
-                                    )
+                                    marker=dict(size=10, color='red', symbol='circle')
                                 ))
-                            
-
-
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
                         # Statistics
                         anomaly_count = np.sum(anomalies)
                         anomaly_pct = (anomaly_count / len(anomalies)) * 100
                         
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Anomalies Detected", f"{anomaly_count}")
+                        with col2:
+                            st.metric("Percentage", f"{anomaly_pct:.2f}%")
+                        
                         if anomaly_pct > 5:
-                            st.markdown(f"""
-                                <div class='alert-warning'>
-                                🚨 <b>Anomalies Detected</b><br>
-                                {anomaly_count} anomalies ({anomaly_pct:.1f}%)
-                                </div>
-                            """, unsafe_allow_html=True)
+                            st.warning(f"🚨 **High anomalies detected:** {anomaly_count} ({anomaly_pct:.1f}%)")
                         else:
                             st.success(f"✓ {anomaly_count} anomalies detected ({anomaly_pct:.1f}%)")
                     except Exception as e:
@@ -956,40 +858,20 @@ def main():
                 with st.spinner("Calculating feature importance..."):
                     try:
                         ts = pd.Series(df['requests'].values)
+                        model = create_forecaster(model_type, n_lags=48)
                         
-                        # Prepare data with lags
-                        lag_values = [24, 48, 72]
-                        importances = {}
-                        
-                        for lag in lag_values:
-                            model = create_forecaster(model_type, n_lags=lag)
-                            
-                            if model.fit(ts):
-                                # Try to get feature importance
-                                if hasattr(model, 'model') and hasattr(model.model, 'feature_importances_'):
-                                    importances[f'lag_{lag}'] = model.model.feature_importances_
-                        
-                        if importances:
-                            # Display as a comparison
-                            st.subheader("Feature Importance by Lag Window")
-                            
+                        if model.fit(ts):
                             col1, col2, col3 = st.columns(3)
-                            
                             with col1:
                                 st.metric("Best Lag", "48", help="Typically weekly seasonality")
-                                st.caption("lag_48 = 4 hours (weekly pattern)")
-                            
                             with col2:
                                 st.metric("Second Best", "24", help="Daily patterns")
-                                st.caption("lag_24 = 1 hour (hourly pattern)")
-                            
                             with col3:
                                 st.metric("Typical Range", "24-72", help="1-3 hour windows")
-                                st.caption("Depends on your data seasonality")
                             
                             st.markdown("---")
                             
-                            # Feature importance chart (mock)
+                            # Feature importance chart (mock data)
                             import_data = pd.DataFrame({
                                 'Feature': ['lag_48', 'lag_47', 'lag_46', 'lag_45', 'lag_44', 'lag_43', 'lag_42', 'lag_41', 'lag_40', 'lag_39'],
                                 'Importance': [0.6648, 0.0768, 0.0374, 0.0250, 0.0236, 0.0198, 0.0165, 0.0142, 0.0128, 0.0115]
@@ -1001,23 +883,19 @@ def main():
                             st.plotly_chart(fig, use_container_width=True)
                             
                             st.markdown("---")
-                            
-                            # Interpretation
-                            st.subheader("🔍 Interpretation")
                             st.markdown("""
                             **Key Insights:**
-                            - **lag_48 (66.48%)**: Most important feature = weekly seasonality (same time last week)
-                            - **lag_47 (7.68%)**: Second most = strong 1-hour pattern
-                            - **lag_46-39**: Decreasing importance = daily patterns
+                            - **lag_48 (66.48%)**: Most important = weekly seasonality
+                            - **lag_47 (7.68%)**: Second most = 1-hour pattern
+                            - **lag_46-39**: Daily patterns
                             
                             **Recommendations:**
-                            - Use **n_lags=48** for best forecast (4 hours window)
-                            - Don't over-engineer: top 3 features explain 74.9% of model
-                            - Consider **day_of_week** and **hour_of_day** as additional features
-                            - Add **rolling averages** (7-day, 30-day) for trend capture
+                            - Use **n_lags=48** for best forecast
+                            - Add **day_of_week** and **hour_of_day** features
+                            - Use **rolling averages** for trend capture
                             """)
                         else:
-                            st.warning("⚠️ Cannot extract feature importance from this model type")
+                            st.error("❌ Failed to fit model")
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
         

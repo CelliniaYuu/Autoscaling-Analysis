@@ -2,9 +2,9 @@
 # YAML format for easy customization
 
 data:
-  folder: d:/AAA_Model/DATA
-  train_file: DATA/train.txt
-  test_file: DATA/test.txt
+  folder: ./DATA
+  train_file: ./DATA/train.txt
+  test_file: ./DATA/test.txt
   train_end_date: "1995-08-22"
   output_folder: outputs
   

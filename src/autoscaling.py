@@ -250,27 +250,52 @@ class AnomalyDetector:
     SPIKE_SCORE_THRESHOLD = 60
     
     @staticmethod
-    def detect_spike(loads, window=10, threshold=2.0):
+    def detect_spike(loads, window=10, threshold=2.0, min_duration=3, percentile=95):
         """
-        Detect load spikes using moving average with adaptive thresholding
+        Detect load spikes using percentile-based thresholding (more robust)
         
         Args:
             loads: array of load values
-            window: moving average window size
-            threshold: std dev multiplier for spike threshold
+            window: moving average window size (legacy param)
+            threshold: multiplier for percentile-based threshold (legacy param)
+            min_duration: minimum consecutive points to be considered spike (default 3)
+            percentile: percentile for baseline (default 95 = top 5% baseline)
         
         Returns:
             array of boolean indicating anomalies
         """
-        if len(loads) < window:
+        if len(loads) < max(window, min_duration):
             return np.zeros(len(loads), dtype=bool)
         
-        # Calculate moving average and std dev
-        ma = pd.Series(loads).rolling(window=window).mean().values
-        mstd = pd.Series(loads).rolling(window=window).std().values
+        # Use percentile-based approach instead of std dev
+        # This is more robust to noise and outliers
+        baseline = np.percentile(loads, percentile)
+        p99 = np.percentile(loads, 99)
+        p90 = np.percentile(loads, 90)
         
-        # Detect spikes
-        anomalies = np.abs(loads - ma) > (threshold * (mstd + 1e-8))
+        # Spike threshold: 1.5x the 95th percentile value
+        # Adjust if percentile is very high
+        if percentile >= 95:
+            spike_threshold = max(baseline * 1.3, p99 * 0.8)
+        else:
+            spike_threshold = baseline * 1.5
+        
+        # Initial detection: points significantly above baseline
+        candidate_spikes = loads > spike_threshold
+        
+        # Apply minimum duration filter to reduce false positives
+        # Requires at least min_duration consecutive points
+        anomalies = np.zeros(len(loads), dtype=bool)
+        for i in range(len(loads)):
+            if candidate_spikes[i]:
+                # Check if part of sustained spike
+                start = max(0, i - min_duration + 1)
+                end = min(len(loads), i + min_duration)
+                window_spikes = candidate_spikes[start:end]
+                
+                # Mark as anomaly if has sustained behavior
+                if np.sum(window_spikes) >= min_duration:
+                    anomalies[i] = True
         
         return anomalies
     
@@ -323,25 +348,39 @@ class AnomalyDetector:
         return np.clip(severity_array, 0, 100)
     
     @staticmethod
-    def _calculate_load_anomaly_score(loads, window=10, threshold_std=2.5):
+    def _calculate_load_anomaly_score(loads, window=10, threshold_std=2.5, percentile_baseline=95):
         """
         Calculate anomaly score for load (0-100)
-        Based on deviation from moving average
+        Based on percentile deviation (more conservative)
+        
+        Args:
+            loads: load values
+            window: moving window size (legacy param)
+            threshold_std: legacy parameter (kept for compatibility)
+            percentile_baseline: use this percentile as normal baseline (default 95)
         """
         if len(loads) < window:
             return np.zeros(len(loads))
         
-        ma = pd.Series(loads).rolling(window=window).mean().values
-        mstd = pd.Series(loads).rolling(window=window).std().values
+        # Use percentile-based baseline instead of moving average
+        # This prevents normal variations from being flagged as anomalies
+        baseline = np.percentile(loads, percentile_baseline)
+        max_load = np.max(loads)
         
-        # Calculate z-score
-        z_scores = np.abs((loads - ma) / (mstd + 1e-8))
+        if max_load <= baseline:
+            return np.zeros(len(loads))
         
-        # Replace NaN with 0 (occurs in early window period)
-        z_scores = np.nan_to_num(z_scores, nan=0.0)
-        
-        # Normalize to 0-100
-        scores = np.minimum((z_scores / threshold_std) * 100, 100)
+        # Score: how far above baseline
+        # Linear scale from baseline to max
+        # Only flag if significantly above baseline (>20% above baseline)
+        scores = np.zeros(len(loads))
+        for i, load in enumerate(loads):
+            if load > baseline:
+                # Deviation percentage above baseline
+                deviation_pct = ((load - baseline) / (max_load - baseline + 1e-8)) * 100
+                # Only score if at least 20% above baseline
+                if deviation_pct > 20:
+                    scores[i] = min(deviation_pct, 100)
         
         return scores
     
@@ -377,6 +416,7 @@ class AnomalyDetector:
                    time_window_minutes=5, adaptive=True):
         """
         Professional DDoS detection with multi-factor scoring
+        DDoS requires BOTH high load AND high error rate (not just load spikes)
         
         Args:
             loads: array of request loads
@@ -402,37 +442,49 @@ class AnomalyDetector:
         error_rates = np.clip(error_rates[:min_len], 0, 1)
         
         # Calculate component scores
-        load_scores = AnomalyDetector._calculate_load_anomaly_score(loads)
+        load_scores = AnomalyDetector._calculate_load_anomaly_score(loads, percentile_baseline=95)
         roc_anomalies = AnomalyDetector._detect_request_rate_anomaly(loads)
         error_severity_array = AnomalyDetector._calculate_error_rate_severity_array(error_rates)
-        sustained = AnomalyDetector._calculate_sustained_anomaly_factor(load_scores > 50)
+        sustained = AnomalyDetector._calculate_sustained_anomaly_factor(load_scores > 30)
         
-        # Adaptive thresholding
+        # Adaptive thresholding - more conservative
         if adaptive:
-            load_baseline = np.percentile(loads, 75)
-            error_baseline = np.percentile(error_rates, 75)
+            load_baseline = np.percentile(loads, 95)  # Changed from 75 to 95 (more conservative)
+            error_baseline = np.percentile(error_rates, 90)  # Changed from 75 to 90
         else:
-            load_baseline = np.percentile(loads, 50)
-            error_baseline = 0.3
+            load_baseline = np.percentile(loads, 90)
+            error_baseline = 0.2  # More conservative threshold
         
-        # Multi-factor DDoS scoring
+        # Multi-factor DDoS scoring with stricter criteria
         ddos_scores = np.zeros(len(loads))
         
         for i in range(len(loads)):
-            # Factor 1: Load anomaly (weight: 35%)
-            load_factor = load_scores[i] * 0.35
+            # DDoS must have BOTH high load AND high error rate
+            # Load spikes alone or error spikes alone are not DDoS
             
-            # Factor 2: Error rate severity (weight: 40%) - prioritize errors for DDoS
-            error_factor = error_severity_array[i] * 0.40
+            # Factor 1: Load anomaly (weight: 30%) - reduced from 35%
+            load_factor = load_scores[i] * 0.30
             
-            # Factor 3: Rate of change (weight: 15%)
-            roc_factor = 100 * roc_anomalies[i] * 0.15
+            # Factor 2: Error rate severity (weight: 50%) - increased from 40%
+            # DDoS is characterized by errors, not just load
+            error_factor = error_severity_array[i] * 0.50
+            
+            # Factor 3: Rate of change (weight: 10%) - reduced from 15%
+            roc_factor = 100 * roc_anomalies[i] * 0.10
             
             # Factor 4: Sustained anomaly (weight: 10%)
             sustained_factor = sustained[i] * 0.10
             
-            # Combine factors
-            ddos_scores[i] = load_factor + error_factor + roc_factor + sustained_factor
+            # CRITICAL: DDoS must have BOTH components
+            # If either load OR error is too low, it's not DDoS
+            has_significant_load = load_scores[i] > 20
+            has_significant_error = error_rates[i] > (error_baseline * 0.7)
+            
+            if has_significant_load and has_significant_error:
+                ddos_scores[i] = load_factor + error_factor + roc_factor + sustained_factor
+            else:
+                # Not DDoS if missing either component
+                ddos_scores[i] = 0
         
         # Confidence based on multiple indicators
         confidence = np.zeros(len(loads))
@@ -440,23 +492,24 @@ class AnomalyDetector:
             indicators = 0
             max_indicators = 4
             
-            if load_scores[i] > 50:
+            if load_scores[i] > 30:  # Changed from 50 to 30
                 indicators += 1
             if error_rates[i] > error_baseline:
                 indicators += 1
             if roc_anomalies[i]:
                 indicators += 1
-            if sustained[i] > 50:
+            if sustained[i] > 30:  # Changed from 50 to 30
                 indicators += 1
             
             confidence[i] = (indicators / max_indicators) * 100
         
-        # Final anomaly detection
-        anomalies = ddos_scores > AnomalyDetector.DDOS_SCORE_THRESHOLD
+        # Final anomaly detection with stricter threshold (increased from 70 to 75)
+        anomalies = (ddos_scores > 75) & (error_rates > error_baseline)
         
         logger.info(f"DDoS Detection Summary:")
         logger.info(f"  - Points analyzed: {len(loads)}")
         logger.info(f"  - Anomalies detected: {np.sum(anomalies)}")
+        logger.info(f"  - Detection rate: {np.sum(anomalies) / len(loads) * 100:.2f}%")
         logger.info(f"  - Average DDoS score: {np.mean(ddos_scores):.2f}")
         logger.info(f"  - Max DDoS score: {np.max(ddos_scores):.2f}")
         logger.info(f"  - Average confidence: {np.mean(confidence):.2f}%")

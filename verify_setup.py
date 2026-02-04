@@ -53,12 +53,12 @@ def verify():
     # 4. Dependencies
     print("\n4. Dependencies:")
     modules = [
-        ('pandas', False),
-        ('numpy', False),
-        ('sklearn', False),
-        ('xgboost', False),
-        ('fastapi', False),
-        ('streamlit', False),
+        ('pandas', 'pandas'),
+        ('numpy', 'numpy'),
+        ('sklearn', 'sklearn'),
+        ('xgboost', 'xgboost'),
+        ('fastapi', 'fastapi'),
+        ('streamlit', 'streamlit'),
     ]
     deps_ok = all(check_item(name, module, is_file=False) for name, module in modules)
     

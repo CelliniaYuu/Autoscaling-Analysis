@@ -3,6 +3,7 @@ Main training pipeline for autoscaling analysis
 """
 import os
 import sys
+import random
 import argparse
 import json
 import logging
@@ -13,6 +14,33 @@ import joblib
 import numpy as np
 import pandas as pd
 from datetime import datetime
+
+# ==================== CRITICAL: Set Random Seeds for Reproducibility ====================
+# This MUST be done before any other imports that use randomness
+SEED = 42
+np.random.seed(SEED)
+random.seed(SEED)
+
+# Set TensorFlow seed if available
+try:
+    import tensorflow as tf
+    tf.random.set_seed(SEED)
+    # For TensorFlow 2.x
+    tf.keras.utils.set_random_seed(SEED)
+except ImportError:
+    pass
+
+# Set PyTorch seed if available
+try:
+    import torch
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(SEED)
+        torch.cuda.manual_seed_all(SEED)
+except ImportError:
+    pass
+
+# ======================================================================================
 
 # Import project modules
 from src.data_loader import load_and_prepare_data, HTTPLogParser, TimeSeriesAggregator
