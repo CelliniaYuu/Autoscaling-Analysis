@@ -93,7 +93,7 @@ class HTTPLogParser:
             return self.logs_data
         
         except Exception as e:
-            logger.error(f"Error loading logs from {filepath}: {e}")
+            logger.error(f"Error loading logs from {Path(filepath).name}: {e}")
             return []
     
     def to_dataframe(self):
@@ -330,7 +330,9 @@ def load_and_prepare_data(filepath, train_end_date=None):
     Returns:
         tuple of (train_data, test_data, quality_report) - all as dict with windows
     """
-    logger.info(f"Loading logs from {filepath}...")
+    # Use relative path for logging
+    rel_path = Path(filepath).name if Path(filepath).is_absolute() else filepath
+    logger.info(f"Loading logs from {rel_path}...")
     parser = HTTPLogParser()
     logs = parser.load_logs(filepath)
     df = parser.to_dataframe()

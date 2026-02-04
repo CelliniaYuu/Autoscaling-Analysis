@@ -544,7 +544,7 @@ def generate_scaling_report(policies_results, save_path=None):
     if save_path:
         with open(save_path, 'w') as f:
             f.write(report)
-        logger.info(f"Report saved to {save_path}")
+        logger.info(f"Report saved to {Path(save_path).name}")
     
     return report
 

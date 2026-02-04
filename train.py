@@ -103,11 +103,12 @@ class AutoscalingPipeline:
         train_path = Path(self.config['train_data_path'])
         
         if not train_path.exists():
-            logger.error(f"Train data file not found: {train_path}")
+            logger.error(f"Train data file not found: {train_path.name}")
             raise FileNotFoundError(f"Train data file not found: {train_path}")
         
         # Load train logs
-        logger.info(f"Loading logs from {train_path}...")
+        rel_train_path = Path(train_path).name if Path(train_path).is_absolute() else train_path
+        logger.info(f"Loading logs from {rel_train_path}...")
         train_data, _, quality_report = load_and_prepare_data(
             str(train_path),
             train_end_date=self.config['train_end_date']
@@ -120,7 +121,7 @@ class AutoscalingPipeline:
         quality_path = Path(self.config['output_folder']) / 'data_quality_report.json'
         with open(quality_path, 'w') as f:
             json.dump(quality_report, f, indent=2, default=str)
-        logger.info(f"Data quality report saved to {quality_path}")
+        logger.info(f"Data quality report saved to {quality_path.name}")
         
         logger.info(f"Train data windows: {list(train_data.keys())}")
         
@@ -368,7 +369,7 @@ class AutoscalingPipeline:
                     }
             json.dump(json_results, f, indent=2)
         
-        logger.info(f"Results saved to {results_file}")
+        logger.info(f"Results saved to {Path(results_file).name}")
 
 
 def main():
